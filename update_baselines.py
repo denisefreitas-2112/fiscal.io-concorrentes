@@ -13,8 +13,11 @@ import json
 import os
 import re
 import time
+import urllib3
 from datetime import datetime
 from bs4 import BeautifulSoup
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 HEADERS = {
     "User-Agent": (
