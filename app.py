@@ -46,36 +46,41 @@ def page_hash(html):
     return hashlib.md5(text.encode()).hexdigest()
 
 
-def extract_price_snippets(html):
+def extract_page_info(html):
+    """Extract meta title, description and any visible price snippets."""
+    result = {"title": "", "description": "", "snippets": []}
     if not html:
-        return []
+        return result
     soup = BeautifulSoup(html, "html.parser")
-    text = soup.get_text(separator="\n")
-    patterns = [
-        r"R\$\s*[\d.,]+",
-        r"[Pp]lano",
-        r"[Pp]reço",
-        r"[Aa]ssinatura",
-        r"[Mm]ensalidade",
-        r"[Gg]ratuito",
-        r"[Ff]ree",
-        r"trial",
-        r"[Cc]ontratar",
-    ]
+
+    tag = soup.find("title")
+    if tag:
+        result["title"] = tag.get_text().strip()
+
+    for attr in [{"property": "og:description"}, {"name": "description"}]:
+        m = soup.find("meta", attr)
+        if m and m.get("content"):
+            result["description"] = m["content"].strip()
+            break
+
+    # price snippets — best effort
+    patterns = [r"R\$\s*[\d.,]+", r"[Pp]lano", r"[Pp]reço", r"[Aa]ssinatura", r"[Mm]ensalidade", r"[Gg]ratuito", r"trial"]
     seen = set()
-    snippets = []
-    for line in text.split("\n"):
+    for line in soup.get_text(separator="\n").split("\n"):
         line = line.strip()
-        if not (8 <= len(line) <= 200):
-            continue
-        if line in seen:
+        if not (8 <= len(line) <= 200) or line in seen:
             continue
         for pat in patterns:
             if re.search(pat, line):
                 seen.add(line)
-                snippets.append(line)
+                result["snippets"].append(line)
                 break
-    return snippets[:25]
+    result["snippets"] = result["snippets"][:20]
+    return result
+
+
+def extract_price_snippets(html):
+    return extract_page_info(html)["snippets"]
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -95,11 +100,13 @@ def get_rss_entries(url, max_items=6):
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def get_reclameaqui(slug):
+def get_reclameaqui(nome_empresa):
+    """Busca pelo nome da empresa no Reclame Aqui."""
     try:
+        q = requests.utils.quote(nome_empresa)
         url = (
             "https://iosearch.reclameaqui.com.br/"
-            f"raichu-io-site-search-v1/query/companyComplaint/5/0?q={slug}"
+            f"raichu-io-site-search-v1/query/companyComplaint/5/0?q={q}"
         )
         r = requests.get(url, headers=HEADERS, timeout=10)
         companies = r.json().get("companies", {}).get("result", [])
@@ -107,11 +114,12 @@ def get_reclameaqui(slug):
             c = companies[0]
             score = c.get("score")
             return {
-                "nome": c.get("fantasyName", slug),
+                "nome": c.get("fantasyName", nome_empresa),
                 "score": round(float(score), 1) if score else "—",
                 "total": c.get("complaintAmount", 0),
                 "respondidas": c.get("answeredAmount", 0),
-                "url": f"https://www.reclameaqui.com.br/empresa/{c.get('slug', slug)}/",
+                "ra_slug": c.get("slug", ""),
+                "url": f"https://www.reclameaqui.com.br/empresa/{c.get('slug', '')}/",
             }
     except Exception:
         pass
@@ -353,27 +361,28 @@ with tab_rep:
             status_txt = st.empty()
             for i, (nome, info) in enumerate(CONCORRENTES.items()):
                 status_txt.text(f"Consultando {nome}…")
-                data = get_reclameaqui(info["reclame"])
+                data = get_reclameaqui(nome)
                 if data:
-                    total = data["total"] if data["total"] != "—" else 0
-                    resp = data["respondidas"] if data["respondidas"] != "—" else 0
+                    total = data["total"] or 0
+                    resp = data["respondidas"] or 0
                     pct = f"{round(int(resp) / int(total) * 100)}%" if int(total) > 0 else "—"
                     results.append({
                         "Concorrente": nome,
                         "Score RA": data["score"],
-                        "Reclamações": data["total"],
-                        "Respondidas": data["respondidas"],
+                        "Reclamações": total,
+                        "Respondidas": resp,
                         "% Resp.": pct,
                         "Perfil RA": data["url"],
                     })
                 else:
+                    q = requests.utils.quote(nome)
                     results.append({
                         "Concorrente": nome,
-                        "Score RA": "—",
+                        "Score RA": "Sem perfil",
                         "Reclamações": "—",
                         "Respondidas": "—",
                         "% Resp.": "—",
-                        "Perfil RA": f"https://www.reclameaqui.com.br/empresa/{info['reclame']}/",
+                        "Perfil RA": f"https://www.reclameaqui.com.br/busca/?q={q}",
                     })
                 prog.progress((i + 1) / len(CONCORRENTES))
                 time.sleep(0.2)
@@ -385,14 +394,14 @@ with tab_rep:
     else:
         df = pd.DataFrame(st.session_state.ra_data)
         st.dataframe(
-            df[["Concorrente", "Score RA", "Reclamações", "Respondidas", "% Resp."]],
+            df[["Concorrente", "Score RA", "Reclamações", "Respondidas", "% Resp.", "Perfil RA"]],
             use_container_width=True,
             hide_index=True,
+            column_config={
+                "Score RA": st.column_config.NumberColumn("Score RA", format="%.1f"),
+                "Perfil RA": st.column_config.LinkColumn("Perfil RA", display_text="Ver perfil ↗"),
+            },
         )
-        st.markdown("**Links:**")
-        cols = st.columns(4)
-        for i, row in enumerate(st.session_state.ra_data):
-            cols[i % 4].markdown(f"[{row['Concorrente']}]({row['Perfil RA']})")
 
         if st.button("🔄 Recarregar RA", key="btn_ra_reload"):
             get_reclameaqui.clear()
@@ -410,16 +419,20 @@ with tab_rep:
 
     g2_rows = []
     for nome, info in CONCORRENTES.items():
-        g2_url = info.get("g2") or f"https://www.g2.com/search#q={nome.replace(' ', '+')}"
-        cap_url = info.get("capterra") or f"https://www.capterra.com.br/search#q={nome.replace(' ', '+')}"
-        g2_rows.append({
-            "Concorrente": nome,
-            "G2": f"[G2 ↗]({g2_url})",
-            "Capterra": f"[Capterra ↗]({cap_url})",
-        })
+        g2_url = info.get("g2") or f"https://www.g2.com/search#q={requests.utils.quote(nome)}"
+        cap_url = info.get("capterra") or f"https://www.capterra.com.br/search#q={requests.utils.quote(nome)}"
+        g2_rows.append({"Concorrente": nome, "G2": g2_url, "Capterra": cap_url})
 
     df_g2 = pd.DataFrame(g2_rows)
-    st.dataframe(df_g2, use_container_width=True, hide_index=True)
+    st.dataframe(
+        df_g2,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "G2": st.column_config.LinkColumn("G2", display_text="Abrir no G2 ↗"),
+            "Capterra": st.column_config.LinkColumn("Capterra", display_text="Abrir no Capterra ↗"),
+        },
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -427,90 +440,94 @@ with tab_rep:
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_site:
     st.subheader("Planos e preços dos concorrentes")
-    st.caption(
-        "Extrai trechos de preços diretamente das páginas. "
-        "Funciona quando o site renderiza preços em HTML. "
-        "Sites SPA (React/Next.js) podem não retornar texto de preços."
+
+    # ── Tabela de links diretos (sempre visível) ───────────────────────────────
+    pricing_rows = []
+    for nome, info in CONCORRENTES.items():
+        p_url = info.get("pricing_url") or info["url"]
+        pricing_rows.append({"Concorrente": nome, "Página de preços": p_url})
+    df_pricing = pd.DataFrame(pricing_rows)
+    st.dataframe(
+        df_pricing,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Página de preços": st.column_config.LinkColumn("Página de preços", display_text="Abrir ↗"),
+        },
     )
+
+    # ── Análise individual ────────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### Análise individual")
 
     empresa_site = st.selectbox("Concorrente", list(CONCORRENTES.keys()), key="site_emp")
     c = CONCORRENTES[empresa_site]
-
-    # Mostra a URL de preços e link direto
     pricing_url = c.get("pricing_url") or c["url"]
-    col_url, col_link = st.columns([3, 1])
-    col_url.caption(f"Página de preços: `{pricing_url}`")
-    col_link.markdown(f"[Abrir página ↗]({pricing_url})")
 
     with st.spinner(f"Carregando {empresa_site}…"):
         html, status = fetch_page(pricing_url)
 
     if html is None:
-        st.error(f"Não foi possível acessar: {status}")
+        st.error(f"Não foi possível acessar {empresa_site}: {status}")
     else:
-        snippets = extract_price_snippets(html)
+        info_page = extract_page_info(html)
         cur_hash = page_hash(html)
-        baselines = load_baselines()
-        baseline = baselines.get(empresa_site)
 
-        # Banner de status
+        # Baselines: arquivo persistido + session_state como fallback
+        baselines = load_baselines()
+        if empresa_site not in baselines and empresa_site not in st.session_state.get("auto_baselines", {}):
+            # Auto-cria baseline na primeira visita (mantido na sessão)
+            if "auto_baselines" not in st.session_state:
+                st.session_state.auto_baselines = {}
+            st.session_state.auto_baselines[empresa_site] = {
+                "hash": cur_hash, "data": datetime.now().isoformat()[:10], "snippets": info_page["snippets"],
+            }
+
+        # Pega o baseline (arquivo > session)
+        baseline = baselines.get(empresa_site) or st.session_state.get("auto_baselines", {}).get(empresa_site)
+
+        # Cabeçalho com link
+        col_h, col_link = st.columns([4, 1])
+        col_h.markdown(f"**{empresa_site}** — [{pricing_url}]({pricing_url})")
+        col_link.markdown(f"[Abrir ↗]({pricing_url})")
+
+        # Metadados da página (sempre disponível, mesmo em sites JS)
+        if info_page["title"]:
+            st.markdown(f"**Título da página:** {info_page['title']}")
+        if info_page["description"]:
+            st.markdown(f"**Descrição:** {info_page['description']}")
+
+        # Status de mudança
         if baseline:
             if baseline["hash"] == cur_hash:
-                st.success(f"✅ Sem alterações desde o baseline de {baseline['data'][:10]}")
+                st.success(f"✅ Sem alterações desde {baseline['data'][:10]}")
             else:
-                st.warning(f"⚠️ **MUDANÇA DETECTADA** em relação ao baseline de {baseline['data'][:10]}")
-        else:
-            st.info("Nenhum baseline salvo ainda. Salve um para monitorar mudanças futuras.")
+                st.warning(f"⚠️ **MUDANÇA DETECTADA** desde {baseline['data'][:10]} — acesse a página para ver o que mudou")
 
-        # Snippets de preço
-        if snippets:
-            st.markdown(f"**Trechos extraídos da página ({len(snippets)} encontrados):**")
-            for s in snippets:
-                st.text(s)
+        # Snippets de preço (bonus quando disponível)
+        if info_page["snippets"]:
+            with st.expander(f"📋 {len(info_page['snippets'])} trechos com preços/planos encontrados no HTML"):
+                for s in info_page["snippets"]:
+                    st.text(s)
         else:
-            st.warning(
-                "Nenhum texto de preço encontrado no HTML desta página. "
-                "Provavelmente os preços são renderizados via JavaScript — "
-                "acesse diretamente pelo link acima."
-            )
+            st.caption("Preços não disponíveis no HTML estático (site provavelmente usa JavaScript). Use o link acima para ver os valores.")
 
-        # Ações
-        st.markdown("---")
-        col_save, col_diff = st.columns(2)
-        if col_save.button("💾 Salvar como baseline", key="btn_save_bl"):
+        # Salvar baseline persistente
+        if st.button("💾 Salvar baseline permanente", key="btn_save_bl"):
             baselines[empresa_site] = {
                 "hash": cur_hash,
                 "url": pricing_url,
                 "data": datetime.now().isoformat(),
-                "snippets": snippets,
+                "snippets": info_page["snippets"],
             }
             save_baselines(baselines)
             st.success(f"✅ Baseline salvo para {empresa_site}")
 
-        if baseline and baseline["hash"] != cur_hash:
-            if col_diff.button("🔍 Ver diferenças", key="btn_diff"):
-                ca, cb = st.columns(2)
-                with ca:
-                    st.markdown(f"**Baseline ({baseline['data'][:10]}):**")
-                    for s in baseline.get("snippets", [])[:15]:
-                        st.text(s)
-                with cb:
-                    st.markdown("**Atual:**")
-                    for s in snippets[:15]:
-                        st.text(s)
-
-    # Links diretos para páginas de preços de todos
+    # ── Detectar mudanças em todos ─────────────────────────────────────────────
     st.markdown("---")
-    st.markdown("**Links diretos para páginas de preços:**")
-    cols = st.columns(4)
-    for i, (nome, info) in enumerate(CONCORRENTES.items()):
-        p_url = info.get("pricing_url") or info["url"]
-        cols[i % 4].markdown(f"[{nome}]({p_url})")
-
-    # Verificação em massa (detecção de mudanças)
-    st.markdown("---")
-    if st.button("📊 Verificar TODOS — detectar mudanças de site", key="btn_all_sites"):
+    if st.button("📊 Escanear TODOS — detectar mudanças", key="btn_all_sites"):
         baselines = load_baselines()
+        auto_bl = st.session_state.get("auto_baselines", {})
         results = []
         prog = st.progress(0)
         txt = st.empty()
@@ -519,11 +536,11 @@ with tab_site:
             p_url = info.get("pricing_url") or info["url"]
             html_all, _ = fetch_page(p_url)
             cur = page_hash(html_all) if html_all else None
-            bl = baselines.get(nome, {})
+            bl = baselines.get(nome) or auto_bl.get(nome)
             if not cur:
                 icone = "❌ Erro de acesso"
             elif not bl:
-                icone = "⚪ Sem baseline"
+                icone = "⚪ Sem baseline (visite a aba individual)"
             elif bl.get("hash") == cur:
                 icone = "✅ Sem mudanças"
             else:
@@ -532,7 +549,6 @@ with tab_site:
                 "Concorrente": nome,
                 "Status": icone,
                 "Baseline": bl.get("data", "—")[:10] if bl else "—",
-                "Página monitorada": p_url,
             })
             prog.progress((i + 1) / len(CONCORRENTES))
             time.sleep(0.3)
