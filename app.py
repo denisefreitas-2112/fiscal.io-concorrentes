@@ -219,40 +219,41 @@ tab_meta, tab_site, tab_conteudo, tab_rep = st.tabs([
 with tab_meta:
     st.subheader("Anúncios ativos no Meta (Facebook / Instagram)")
 
+    # Busca via API (disponível quando o token estiver configurado)
+    st.selectbox("Concorrente", list(CONCORRENTES.keys()), key="meta_emp", disabled=not META_TOKEN)
+    btn_meta = st.button("🔍 Buscar anúncios ativos", key="btn_meta", disabled=not META_TOKEN)
+
     if not META_TOKEN:
-        st.error(
-            "Configure `META_ACCESS_TOKEN` nos **Secrets** do Streamlit Cloud.\n\n"
-            "Obtenha seu token em: https://developers.facebook.com/tools/explorer/"
+        st.info(
+            "🔧 **Integração em configuração.** A busca automática de anúncios ficará disponível "
+            "após a configuração do Meta Access Token nos Secrets do Streamlit Cloud."
         )
-    else:
-        empresa_sel = st.selectbox("Concorrente", list(CONCORRENTES.keys()), key="meta_emp")
-
-        if st.button("🔍 Buscar anúncios ativos", key="btn_meta"):
-            c = CONCORRENTES[empresa_sel]
-            with st.spinner(f"Consultando Meta Ad Library para {empresa_sel}..."):
-                ads, err = get_meta_ads(c["meta_search"], META_TOKEN)
-
-            if err:
-                st.error(f"Erro da API: {err}")
-            elif not ads:
-                st.info(f"Nenhum anúncio ativo encontrado para '{empresa_sel}'.")
-            else:
-                st.success(f"**{len(ads)}** anúncio(s) ativo(s)")
-                for ad in ads:
-                    page = ad.get("page_name", "Página desconhecida")
-                    inicio = (ad.get("ad_delivery_start_time") or "?")[:10]
-                    titles = ad.get("ad_creative_link_titles") or []
-                    bodies = ad.get("ad_creative_bodies") or []
-                    with st.expander(f"📌 {page}  —  desde {inicio}"):
-                        if titles:
-                            st.markdown(f"**{titles[0]}**")
-                        if bodies:
-                            st.write(bodies[0])
-                        if ad.get("ad_snapshot_url"):
-                            st.markdown(f"[Ver criativo completo ↗]({ad['ad_snapshot_url']})")
+    elif btn_meta:
+        empresa_sel = st.session_state.meta_emp
+        c = CONCORRENTES[empresa_sel]
+        with st.spinner(f"Consultando Meta Ad Library para {empresa_sel}..."):
+            ads, err = get_meta_ads(c["meta_search"], META_TOKEN)
+        if err:
+            st.error(f"Erro da API: {err}")
+        elif not ads:
+            st.info(f"Nenhum anúncio ativo encontrado para '{empresa_sel}'.")
+        else:
+            st.success(f"**{len(ads)}** anúncio(s) ativo(s)")
+            for ad in ads:
+                page = ad.get("page_name", "Página desconhecida")
+                inicio = (ad.get("ad_delivery_start_time") or "?")[:10]
+                titles = ad.get("ad_creative_link_titles") or []
+                bodies = ad.get("ad_creative_bodies") or []
+                with st.expander(f"📌 {page}  —  desde {inicio}"):
+                    if titles:
+                        st.markdown(f"**{titles[0]}**")
+                    if bodies:
+                        st.write(bodies[0])
+                    if ad.get("ad_snapshot_url"):
+                        st.markdown(f"[Ver criativo completo ↗]({ad['ad_snapshot_url']})")
 
     st.markdown("---")
-    st.markdown("**Links diretos na Ad Library do Meta:**")
+    st.markdown("**Links diretos na Ad Library do Meta (sem token):**")
     cols = st.columns(4)
     for i, (nome, info) in enumerate(CONCORRENTES.items()):
         q = info["meta_search"].replace(" ", "%20")
